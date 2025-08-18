@@ -1,0 +1,16 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# original goombalab files
+hnet_2stage_XL.*
+
+# profiling
+chrometrace-*
