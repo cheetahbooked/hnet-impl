@@ -1,4 +1,6 @@
-To obtain scaling laws for any architecture, we must implement hardware-efficient training.
+# Notes on engineering work
+
+What makes this implementation "efficient"?
 
 ## Desiderata
 For small scale research runs, the following criteria are ideal:
@@ -18,7 +20,7 @@ In reality, it takes significant effort to make an individual H-Net block compil
 ### Mamba2
 The first major roadblock against efficient H-Net training is the **Mamba2 layer**, and specifically its gigantic `mamba_split_conv1d_scan_combined` method.
 
-![[Pasted image 20250726200755.png]]
+![](Pasted%20image%2020250726200755.png)
 
 Many past users of Mamba2 have complained about the [impossibility of compiling](https://github.com/state-spaces/mamba/issues/740) && the extreme slowness of it at small scale, to which the official reply is to "[use a large model](https://github.com/state-spaces/mamba/issues/355#issuecomment-2147597457)".
 
@@ -54,15 +56,15 @@ Also, many kernels use `pre_hook` to zero inputs during auto-tuning, but `pre_ho
 #### Redundant clones
 After all of that bullshit, the `mamba_split_conv1d_scan_combined` is fullgraph compilable.
 
-![[Pasted image 20250726200831.png]]
+![](Pasted%20image%2020250726200831.png)
 
 However, the naive compiled result is quite inefficient from a memory bandwidth perspective:
 
-![[Pasted image 20250814183548.png]]
+![](Pasted%20image%2020250814183548.png)
 Each of those magenta `triton_poi*` blocks are wholly unnecessary copies from one memory address to another.
 
 For example, the highlighted `triton_poi_fused_2` above implemented a redundant copy of one `empty` tensor to another (i.e. copying **uninitialized data**):
-![[Pasted image 20250814183538.png]]
+![](Pasted%20image%2020250814183538.png)
 
 The origins of this stem from another programming pattern in mamba's source code, where
 1. a large fused output tensor (e.g. `dzxbcdt`) is created
@@ -96,7 +98,7 @@ Dynamo's interpretation of compiled H-Net blocks is thus equivalent to a ridicul
 - has parameters with dynamically varying hidden dim (very bad)
 
 But I only need the first item on that list to be true. So, to sidestep this behavior, I transform the Block into a metaclass:
-![[Pasted image 20250814202650.png]]
+![](Pasted%20image%2020250814202650.png)
 Whenever a new _kind_ of Block is required, it copies the implementation of `.forward` into a new `FunctionType` with a different hash.
 
 That ensures dynamo correctly specializes the compiled code, depending on the behavior of each block, and helps to fix $S>1$ nets by proxy.
@@ -110,16 +112,16 @@ That ensures dynamo correctly specializes the compiled code, depending on the be
 All those points are still true for H-Nets of sufficient size.
 
 When you have insufficient size, this occurs:
-![[Pasted image 20250814184724.png]]
+![](Pasted%20image%2020250814184724.png)
 A naive approach to block compilation leads to only ~50% of execution time occurring inside the actual inductor code produced for the block, and the rest of it spent on safety barriers like shape size counting and dynamo guards.
 
 Of course, those barriers are important, as they are responsible for triggering recompilation in the event of varied sequence lengths, and/or accidental external modifications to the global torch environment. So it would be bad to remove them completely.
 
 On the other hand, executing them *every* block (which torch must do for generalized correctness) is a waste, if we know with certainty that a block is repeated. Therefore, we ~~use the 2.8 `nested_compile_region` feature~~ manually implement a bespoke strategy to evade guards in the event of a repeated layer variant:
-![[Pasted image 20250814185517.png]]
+![](Pasted%20image%2020250814185517.png)
 
 After doing so, the compile guards only exist for the first layer an Isotropic:
-![[Pasted image 20250814185751.png]]
+![](Pasted%20image%2020250814185751.png)
 
 Obviously, this is highly unsafe, and should only be done with the confident backing of someone who has worked on the torch.compile ecosystem extensively.
 
@@ -128,24 +130,23 @@ Obviously, this is highly unsafe, and should only be done with the confident bac
 So, after we deal with all of those horrors, the performance of Isotropics are quite well-optimized.
 
 Yet, if we look at the graph on a reasonably small $S=1$ model:
-![[Pasted image 20250814203212.png]]
+![](Pasted%20image%2020250814203212.png)
 There is still obscene overhead from the external modules -- close to 40% of execution time, which creates obvious compute bubbles at the top.
 ## CPU Overhead
-Essentially I do four things:
-0. train with 1gpu (so no FSDP2 overhead)
+Essentially I do three things:
 1. nuke NJT
 2. compile other modules
 3. overlap masked_select with compute
 
-This makes the forward pass very ugly. I go from this (beautiful, clean code):
-![[Pasted image 20250814203658.png]]
+Unfortunately, this makes the forward pass a bit uglier. You go from this:
+![](Pasted%20image%2020250814203658.png)
 
-To this garbage:
-![[Pasted image 20250814203729.png]]
+To this:
+![](Pasted%20image%2020250814203729.png)
 
-This is not fun at all, so I don't really want to elaborate on it.
+If you would like me to elaborate on how this works, raise an issue.
 
 ## Conclusion
 After that work, even my `S2-small.yaml` config is incredibly CUDA bound:
-![[Pasted image 20250814204035.png]]
+![](Pasted%20image%2020250814204035.png)
 
