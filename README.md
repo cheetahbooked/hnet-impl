@@ -3,10 +3,16 @@
 Efficient trainable H-Net implementation.
 
 ## Install
+In an external project:
 ```bash
 src=git+https://github.com/main-horse/hnet-impl
 uv add "hnet-impl @ $src"
 uv add "hnet-impl[build] @ $src" --no-cache
+```
+For local development:
+```bash
+git clone https://github.com/main-horse/hnet-impl && cd hnet-impl
+uv sync && uv sync --extra build
 ```
 
 ## Usage
