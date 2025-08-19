@@ -56,11 +56,13 @@ kernels:
 uv run -m hnet_impl.norm
 uv run -m hnet_impl.lin
 ```
-$S=1$ block profiling:
+$S=1$ block profiling (should only recompile for dynamic sequence length):
 ```python
 TORCH_LOGS=recompiles uv run -m hnet_impl.xf --s0=9289 --s1=2048 --d0=512 --d1=768 --lm=4 --lt=10
 ```
 `2stage_XL` fwd equiv check:
 ```python
+# NOTE: download hnet_2stage_XL from somewhere first.
+# cp /path/to/hnet/hnet_2stage_XL.pt /path/to/hnet/config/hnet_2stage_XL.json .
 uv run -m hnet_impl.modeling_hnet
 ```
