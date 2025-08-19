@@ -7,7 +7,7 @@ In an external project:
 ```bash
 src=git+https://github.com/main-horse/hnet-impl
 uv add "hnet-impl @ $src"
-uv add "hnet-impl[build] @ $src" --no-cache
+uv add "hnet-impl[build] @ $src" --no-cache --no-build-isolation
 ```
 For local development:
 ```bash
