@@ -1,6 +1,6 @@
 # H-Net Implementation
 
-Efficient trainable H-Net implementation.
+Efficient small-scale H-Net implementation. See details [here](http://main-horse.github.io/hnet/eng-1gpu).
 
 ## Install
 In an external project:
@@ -66,3 +66,7 @@ TORCH_LOGS=recompiles uv run -m hnet_impl.xf --s0=9289 --s1=2048 --d0=512 --d1=7
 # cp /path/to/hnet/hnet_2stage_XL.pt /path/to/hnet/config/hnet_2stage_XL.json .
 uv run -m hnet_impl.modeling_hnet
 ```
+
+## Usecases
+This package is reasonably useful for researchers who want to train unmodified text-only H-Nets on toy single-node tasks.
+
