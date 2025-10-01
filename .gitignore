@@ -14,3 +14,4 @@ hnet_2stage_XL.*
 
 # profiling
 chrometrace-*
+.aider*
