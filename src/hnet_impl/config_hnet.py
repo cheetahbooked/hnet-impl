@@ -9,7 +9,7 @@ def get_stage_cfg(cfg: "AttnConfig | SSMConfig", stage_idx: int) -> dict[str, in
     }
 
 
-### Model configs ###
+### Model configs ##
 @dataclass(frozen=True)
 class AttnConfig:
     num_heads: list = field(default_factory=list)
