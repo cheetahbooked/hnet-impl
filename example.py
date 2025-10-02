@@ -71,7 +71,8 @@ zero = torch.tensor(0.0, device="cuda")
 for step, (iids, lbls) in zip(range(max_steps), random_batches()):
     with torch.autocast("cuda", torch.bfloat16):
         (l_avg, l_sum), extra = m(iids.cuda(), lbls.cuda())
-        l_ratio = sum([e.loss_ratio for e in extra], zero)
+        # Filter for HNetExtra objects containing loss_ratio (routing loss), excluding ACT metadata
+        l_ratio = sum([e.loss_ratio for e in extra if hasattr(e, 'loss_ratio')], zero)
         loss = l_avg + l_ratio
     loss.backward()
 

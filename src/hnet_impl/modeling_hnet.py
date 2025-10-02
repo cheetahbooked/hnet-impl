@@ -12,6 +12,7 @@ from .lin import Lin, HighPrecLinear, LMHead
 
 # ACT imports
 from hrm.hrm.hrm_act_v1 import HierarchicalReasoningModel_ACTV1
+from hrm.losses import IGNORE_LABEL_ID
 
 ### ################
 ### H-Net submodules
@@ -23,6 +24,14 @@ class HNetExtra:
     b: TT  # (B,j1) boolean label for whether byte was selected
     loss_ratio: TT  # scalar tensor -- routing loss for this block
     compress_ratio: float  # scalar float -- compression ratio
+
+
+@dataclass(frozen=True)
+class HNetExtraACT:
+    q_halt_logits: TT
+    q_continue_logits: TT
+    target_q_continue: TT | None
+    indices: TT # flat indices [N] of sequences this metadata belongs to
 
 
 class STE(torch.autograd.Function):
@@ -259,7 +268,7 @@ class HNet(nn.Module):
         for outer in outer_flat_tensors:
             mutable_res.append(outer.index_select(0, idx_flat))
 
-    def forward(self, x_flat: TT, flat_cu: TT, msl: int):
+    def forward(self, x_flat: TT, flat_cu: TT, msl: int, lbl_flat: TT | None = None):
         d_orig = x_flat.shape[-1]
         x_flat = (
             x_flat
@@ -274,12 +283,19 @@ class HNet(nn.Module):
             if isinstance(self.main_network, HierarchicalReasoningModel_ACTV1):
                 flat_len = x_flat.shape[0]
                 batch_hrm = {"vector_input": x_flat}
+
+                # If training, pass labels for HRM-ACT internal Q-target bootstrapping
+                if torch.is_grad_enabled() and lbl_flat is not None:
+                     # HRM expects labels for Q-learning target calculation
+                     batch_hrm["labels"] = lbl_flat
                 
                 # Initialize carry state
                 carry = self.main_network.initial_carry(batch_hrm)
                 
                 final_x_flat = torch.zeros_like(x_flat)
                 halted_mask = torch.zeros((flat_len,), dtype=torch.bool, device=x_flat.device)
+
+                act_extras = []
                 
                 for _t in range(self.main_network.config.halt_max_steps):
                     # Perform one step of ACT
@@ -288,6 +304,19 @@ class HNet(nn.Module):
                     # Identify sequences newly halted in this step
                     newly_halted = carry.halted & ~halted_mask
                     
+                    # Store ACT Q signals for sequences that halted in this step
+                    # Requires target_q_continue to be present (i.e., training mode)
+                    if newly_halted.any() and "target_q_continue" in outputs:
+                        indices = newly_halted.nonzero_static(size=flat_len).squeeze(-1)
+
+                        extra = HNetExtraACT(
+                            q_halt_logits=outputs["q_halt_logits"].index_select(0, indices).detach(),
+                            q_continue_logits=outputs["q_continue_logits"].index_select(0, indices).detach(),
+                            target_q_continue=outputs["target_q_continue"].index_select(0, indices).detach(),
+                            indices=indices
+                        )
+                        act_extras.append(extra)
+
                     # Store the final vector for newly halted sequences
                     if newly_halted.any():
                         final_x_flat[newly_halted] = outputs["final_vector"][newly_halted]
@@ -297,8 +326,25 @@ class HNet(nn.Module):
                     if halted_mask.all():
                         break
                         
+                if not halted_mask.all():
+                    # Sequences that didn't halt naturally halt at max steps.
+                    # We ensure final output vector is written.
+                    final_x_flat[~halted_mask] = outputs["final_vector"][~halted_mask]
+
+                    # Collect Q signals for sequences that hit max steps if training
+                    if "target_q_continue" in outputs:
+                        indices = (~halted_mask).nonzero_static(size=flat_len).squeeze(-1)
+                        
+                        extra = HNetExtraACT(
+                            q_halt_logits=outputs["q_halt_logits"].index_select(0, indices).detach(),
+                            q_continue_logits=outputs["q_continue_logits"].index_select(0, indices).detach(),
+                            target_q_continue=outputs["target_q_continue"].index_select(0, indices).detach(),
+                            indices=indices
+                        )
+                        act_extras.append(extra)
+
                 final_x_flat = final_x_flat[..., :d_orig]
-                return final_x_flat, []
+                return final_x_flat, act_extras
 
             else: # Isotropic fallback
                 return self.main_network(x_flat, flat_cu, msl)[..., :d_orig], []
@@ -359,8 +405,81 @@ class HNetLM(BlockBoundaryMixin, nn.Module):
         assert iids.is_nested and iids.ndim == 2
         cu_s, msl = iids.offsets(), iids._max_seqlen
         x_flat = self.embeddings(iids.values())
-        x_flat, extra = self.backbone(x_flat, cu_s, msl)
-        res = self.lm_head(x_flat, lbls if lbls is None else lbls.values())
+        lbl_flat = lbls.values() if lbls is not None else None
+
+        # Pass flat labels down to backbone for potential ACT internal usage
+        x_flat, extra = self.backbone(x_flat, cu_s, msl, lbl_flat)
+        
+        # Calculate LM head output (logits or loss tuple)
+        res = self.lm_head(x_flat, lbl_flat)
+
+        # ACT Loss Calculation (if training and ACT extras are present)
+        # We check if the first element is HNetExtraACT because routing loss HNetExtra objects typically come first
+        is_act_training = lbls is not None and lbl_flat is not None and extra and any(isinstance(e, HNetExtraACT) for e in extra)
+
+        if is_act_training:
+            l_avg, l_sum = res # Assume res is (l_avg, l_sum) when training
+            
+            # --- 1. Get raw logits to determine correctness target (R) ---
+            # NOTE: Calling forward again is necessary if lm_head abstracts logits away.
+            lm_logits = self.lm_head(x_flat, None) 
+            
+            # Determine correctness R per token 
+            mask = lbl_flat != IGNORE_LABEL_ID
+            is_correct = mask & (torch.argmax(lm_logits, dim=-1) == lbl_flat)
+            rewards = is_correct.to(torch.float32) 
+            
+            total_act_loss = torch.tensor(0.0, device=lm_logits.device, dtype=lm_logits.dtype)
+            act_loss_metadata = {}
+
+            # --- 2. Calculate ACT Q-Loss for sequences that halted/maxed out ---
+            filtered_extra = []
+            act_extra_count = 0 
+            
+            for e in extra:
+                if isinstance(e, HNetExtraACT):
+                    indices = e.indices
+                    R = rewards.index_select(0, indices)
+
+                    # Q_halt loss: predicts R (0 or 1)
+                    q_halt_loss = F.binary_cross_entropy_with_logits(
+                        e.q_halt_logits, R, reduction="sum"
+                    )
+                    
+                    # Q_continue loss: predicts Q-bootstrap target
+                    q_cont_loss = F.binary_cross_entropy_with_logits(
+                         e.q_continue_logits, 
+                         e.target_q_continue, # target_q_continue is guaranteed to be tensor if is_act_training is true
+                         reduction="sum"
+                     )
+                    
+                    # Sum the Q losses (weighted 0.5 as per src/hrm/losses.py ACTLossHead)
+                    q_loss = 0.5 * (q_halt_loss + q_cont_loss) 
+                    total_act_loss = total_act_loss + q_loss
+                    
+                    # Log metrics
+                    act_loss_metadata[f"q_halt_loss_{act_extra_count}"] = q_halt_loss.detach()
+                    act_loss_metadata[f"q_cont_loss_{act_extra_count}"] = q_cont_loss.detach()
+                    act_loss_metadata[f"act_accuracy_{act_extra_count}"] = ((e.q_halt_logits >= e.q_continue_logits) == R).float().sum().detach()
+                    act_extra_count += 1
+                else:
+                    filtered_extra.append(e) # Keep non-ACT extras (e.g., HNetExtra for routing)
+
+            extra = filtered_extra # Update extra list excluding HNetExtraACT instances
+            
+            # Integrate ACT loss into overall sequence total loss (l_sum)
+            l_sum = l_sum + total_act_loss
+            
+            # Recalculate average loss based on new total loss and valid tokens
+            valid_labels_count = mask.sum() 
+            l_avg_new = l_sum / valid_labels_count.clamp_min(1)
+            
+            res = (l_avg_new, l_sum)
+            
+            extra.append({'total_act_loss_sum': total_act_loss.detach()})
+            extra.append(act_loss_metadata)
+
+
         if lbls is None:
             res = nested.nested_tensor_from_jagged(res, cu_s, max_seqlen=msl)
         return res, extra
