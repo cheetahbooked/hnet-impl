@@ -10,7 +10,7 @@ except ImportError:
     # Fallback to FlashAttention 2
     from flash_attn import flash_attn_func  # type: ignore[import]
 
-from models.common import trunc_normal_init_
+from hrm.common import trunc_normal_init_
 
 
 CosSin = Tuple[torch.Tensor, torch.Tensor]
