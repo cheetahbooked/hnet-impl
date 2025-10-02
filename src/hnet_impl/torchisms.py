@@ -9,16 +9,9 @@ from tqdm import tqdm
 import torch
 import torch.nn.functional as F
 import torch._dynamo as dynamo
-from torch import nn, Tensor as TT, distributed as dist, multiprocessing as mp, nested
+from torch import nn, Tensor as TT, nested
 
 from torch._dynamo import OptimizedModule
-from torch.distributed import device_mesh as tdm, fsdp, checkpoint as dcp
-from torch.distributed.fsdp._fully_shard import FSDPModule
-from torch.distributed.checkpoint import state_dict as dcps
-from torch.distributed.tensor import DTensor
-from torch.distributed.algorithms._checkpoint.checkpoint_wrapper import (
-    checkpoint_wrapper as ptd_checkpoint_wrapper,
-)
 from torch.profiler import schedule, profile, ProfilerActivity, record_function
 from torch.nested._internal.ops import (
     register_jagged_func,
@@ -59,20 +52,8 @@ def unsafe_reduce_optimizedmodule_overhead():
 
 
 @contextmanager
-def summon_full_params(model: FSDPModule):
-    handles = [
-        m.unshard(async_op=True)
-        for m in reversed(list(model.modules()))
-        if isinstance(m, FSDPModule)
-    ]
-    for h in handles:
-        h.wait() if h is not None else 0
-
+def summon_full_params(model: nn.Module):
     yield
-
-    for m in reversed(list(model.modules())):
-        if isinstance(m, FSDPModule):
-            m.reshard()
 
 
 def rand_njt_iids(docs: int, slen: range, v: int = 256):

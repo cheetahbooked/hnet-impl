@@ -1,6 +1,6 @@
 from collections import deque
 
-from .torchisms import torch, TT, nn, OptimizedModule, fsdp
+from .torchisms import torch, TT, nn, OptimizedModule
 
 
 def get_seq_idx(cu_seqlens: TT, flatlen: int) -> TT:
@@ -35,9 +35,7 @@ class BlockBoundaryMixin:
 
     @staticmethod
     def apply_fsdp(self, **kwargs):
-        for c in self.child_blocks():
-            getattr(c, "apply_fsdp")(c, **kwargs)
-        fsdp.fully_shard(self, **kwargs)
+        pass
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

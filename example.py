@@ -3,24 +3,18 @@ from contextlib import nullcontext
 
 import torch
 from torch import nested, Tensor as TT
-from torch.distributed import device_mesh as tdm, fsdp
 
 from hnet_impl import HNetLM, HNetConfig, ByteTokenizer, completion_sync
 
 ## dist init
-# Default to single GPU execution (rank 0, world size 1) if environment variables are not set.
-r = int(os.environ.get("RANK", 0))
-ws = int(os.environ.get("WORLD_SIZE", 1))
-local_rank = int(os.environ.get("LOCAL_RANK", 0))
+r = 0
+ws = 1
+local_rank = 0
 
 if torch.cuda.is_available():
     torch.cuda.set_device(local_rank)
 
-if ws > 1:
-    # Initialize device mesh for distributed training
-    mesh = tdm.init_device_mesh("cuda", (ws,), mesh_dim_names=("dp",))
-else:
-    mesh = None
+mesh = None
 
 ## create model
 t = ByteTokenizer()
@@ -30,12 +24,7 @@ with torch.device("cuda"):
 
 ## fsdp/compile
 m.backbone.block_compile(ac=False)
-m.apply_fsdp(  # default: BF16, ZeRO2, 1D mesh
-    m,
-    mp_policy=fsdp.MixedPrecisionPolicy(param_dtype=torch.bfloat16),
-    reshard_after_forward=False,
-    mesh=mesh["dp"],
-) if ws > 1 else m
+m
 
 ## optim / lr sched
 base_lr, max_steps = 3e-4, 1000
@@ -80,7 +69,7 @@ with m.sampling_mode():
 ## training loop
 zero = torch.tensor(0.0, device="cuda")
 for step, (iids, lbls) in zip(range(max_steps), random_batches()):
-    with torch.autocast("cuda", torch.bfloat16) if ws > 1 else nullcontext():
+    with torch.autocast("cuda", torch.bfloat16):
         (l_avg, l_sum), extra = m(iids.cuda(), lbls.cuda())
         l_ratio = sum([e.loss_ratio for e in extra], zero)
         loss = l_avg + l_ratio

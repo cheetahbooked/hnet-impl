@@ -1,7 +1,7 @@
 import triton
 import triton.language as tl
 
-from .torchisms import torch, nn, TT, fsdp, F
+from .torchisms import torch, nn, TT, F
 from .conceptual import BlockBoundaryMixin
 
 
@@ -28,10 +28,7 @@ class HighPrecLinear(BlockBoundaryMixin, nn.Linear):
 
     @staticmethod
     def apply_fsdp(self, **kw):
-        fsdp.fully_shard(
-            self,
-            **kw | {"mp_policy": fsdp.MixedPrecisionPolicy(param_dtype=torch.float32)},
-        )
+        pass
 
 
 ### LMHead: Fused Linear + Cross Entropy ###

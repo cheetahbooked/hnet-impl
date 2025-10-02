@@ -381,10 +381,7 @@ class Block(BlockBoundaryMixin, nn.Module, metaclass=BlockMeta):
 
     @staticmethod
     def apply_fsdp(self, **kw):
-        mp_policy = fsdp.MixedPrecisionPolicy(
-            param_dtype=torch.bfloat16, cast_forward_inputs=False
-        )
-        return fsdp.fully_shard(self, **kw | {"mp_policy": mp_policy})
+        pass
 
 
 class Isotropic(nn.Module):
@@ -438,7 +435,8 @@ class Isotropic(nn.Module):
 
     def block_compile(self, ac: bool):
         def apply_ac(l):
-            return ptd_checkpoint_wrapper(l, preserve_rng_state=False) if ac else l
+            # Distributed/ptd checkpointing removed.
+            return l
 
         for i, l in enumerate(self.layers):
             self.layers.register_module(
