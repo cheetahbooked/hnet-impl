@@ -10,6 +10,9 @@ from .config_hnet import HNetConfig
 from .xf import Isotropic
 from .lin import Lin, HighPrecLinear, LMHead
 
+# ACT imports
+from ..hrm.hrm.hrm_act_v1 import HierarchicalReasoningModel_ACTV1
+
 ### ################
 ### H-Net submodules
 ### ################
@@ -171,9 +174,27 @@ class HNet(nn.Module):
         self.is_innermost = len(arch_layout) == 1
 
         if self.is_innermost:
-            self.main_network = Isotropic(
-                c, arch_layout[0], stage_idx=stage_idx
-            )  # <-- don't increment
+            if "ACT" in arch_layout[0]:
+                # Construct config dict for HierarchicalReasoningModel_ACTV1
+                act_config_for_hrm = {
+                    "H_cycles": c.act_cfg.H_cycles,
+                    "L_cycles": c.act_cfg.L_cycles,
+                    "H_layers": c.act_cfg.H_layers,
+                    "L_layers": c.act_cfg.L_layers,
+                    "halt_max_steps": c.act_cfg.halt_max_steps,
+                    "halt_exploration_prob": c.act_cfg.halt_exploration_prob,
+                    "expansion": c.act_cfg.expansion,
+                    
+                    "hidden_size": self.d,
+                    "rms_norm_eps": 1e-5, # HRM default based on code inspection
+                    "forward_dtype": "bfloat16", # Consistent with HNet usage
+                    "batch_size": 1, # Dummy batch size for initialization
+                }
+                self.main_network = HierarchicalReasoningModel_ACTV1(act_config_for_hrm)
+            else:
+                self.main_network = Isotropic(
+                    c, arch_layout[0], stage_idx=stage_idx
+                )  # <-- don't increment
         else:
             self.encoder = Isotropic(c, arch_layout[0], stage_idx=stage_idx)
             self.main_network = HNet(c, stage_idx + 1)
@@ -250,7 +271,37 @@ class HNet(nn.Module):
         x_flat = x_flat.bfloat16()
 
         if self.is_innermost:
-            return self.main_network(x_flat, flat_cu, msl)[..., :d_orig], []
+            if isinstance(self.main_network, HierarchicalReasoningModel_ACTV1):
+                flat_len = x_flat.shape[0]
+                batch_hrm = {"vector_input": x_flat}
+                
+                # Initialize carry state
+                carry = self.main_network.initial_carry(batch_hrm)
+                
+                final_x_flat = torch.zeros_like(x_flat)
+                halted_mask = torch.zeros((flat_len,), dtype=torch.bool, device=x_flat.device)
+                
+                for _t in range(self.main_network.config.halt_max_steps):
+                    # Perform one step of ACT
+                    carry, outputs = self.main_network(carry, batch_hrm)
+                    
+                    # Identify sequences newly halted in this step
+                    newly_halted = carry.halted & ~halted_mask
+                    
+                    # Store the final vector for newly halted sequences
+                    if newly_halted.any():
+                        final_x_flat[newly_halted] = outputs["final_vector"][newly_halted]
+                        
+                    halted_mask |= carry.halted
+                    
+                    if halted_mask.all():
+                        break
+                        
+                final_x_flat = final_x_flat[..., :d_orig]
+                return final_x_flat, []
+
+            else: # Isotropic fallback
+                return self.main_network(x_flat, flat_cu, msl)[..., :d_orig], []
 
         r_flat = self.encoder(x_flat, flat_cu, msl)
         p_flat, b_flat, select_cu = self.routing_module(r_flat, flat_cu)

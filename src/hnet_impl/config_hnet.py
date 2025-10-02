@@ -18,6 +18,16 @@ class AttnConfig:
 
 
 @dataclass(frozen=True)
+class ACTConfig:
+    H_cycles: int = 1
+    L_cycles: int = 1
+    H_layers: int = 1
+    L_layers: int = 1
+    halt_max_steps: int = 10
+    halt_exploration_prob: float = 0.5
+    expansion: float = 4.0 # Equivalent SwiGLU expansion for typical 8/3 FFN intermediate size
+
+@dataclass(frozen=True)
 class SSMConfig:
     d_conv: int = 4
     expand: int = 2
@@ -33,6 +43,7 @@ class HNetConfig:
     d_intermediate: list[int] = field(default_factory=list)
     vocab_size: int = 256
     tie_embeddings: bool = False
+    act_cfg: ACTConfig = field(default_factory=ACTConfig)
     ssm_cfg: SSMConfig = field(
         default_factory=lambda: SSMConfig(
             chunk_size=256, d_conv=4, d_state=128, expand=2
@@ -63,11 +74,12 @@ class HNetConfig:
             c = json.load(f)
             attn_cfg = AttnConfig(**c.pop("attn_cfg"))
             ssm_cfg = SSMConfig(**c.pop("ssm_cfg"))
+            act_cfg = ACTConfig(**c.pop("act_cfg"))
             if c.get("N_compress", ...) is None:
                 del c["N_compress"]
             if k.get("N_compress", ...) is None:
                 del k["N_compress"]
-            return cls(**c, attn_cfg=attn_cfg, ssm_cfg=ssm_cfg, **k)
+            return cls(**c, attn_cfg=attn_cfg, ssm_cfg=ssm_cfg, act_cfg=act_cfg, **k)
 
     @classmethod
     def create_reasonable_config(
