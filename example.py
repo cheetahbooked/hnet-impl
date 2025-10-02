@@ -8,9 +8,19 @@ from torch.distributed import device_mesh as tdm, fsdp
 from hnet_impl import HNetLM, HNetConfig, ByteTokenizer, completion_sync
 
 ## dist init
-r, ws = int(os.environ["WORLD_SIZE"]), int(os.environ["WORLD_SIZE"])
-torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
-mesh = tdm.init_device_mesh("cuda", (ws,), mesh_dim_names=("dp",))
+# Default to single GPU execution (rank 0, world size 1) if environment variables are not set.
+r = int(os.environ.get("RANK", 0))
+ws = int(os.environ.get("WORLD_SIZE", 1))
+local_rank = int(os.environ.get("LOCAL_RANK", 0))
+
+if torch.cuda.is_available():
+    torch.cuda.set_device(local_rank)
+
+if ws > 1:
+    # Initialize device mesh for distributed training
+    mesh = tdm.init_device_mesh("cuda", (ws,), mesh_dim_names=("dp",))
+else:
+    mesh = None
 
 ## create model
 t = ByteTokenizer()
