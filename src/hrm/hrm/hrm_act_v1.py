@@ -7,9 +7,9 @@ import torch.nn.functional as F
 from torch import nn
 from pydantic import BaseModel
 
-from models.common import trunc_normal_init_
-from models.layers import rms_norm, SwiGLU, CastedLinear
-from models.sparse_embedding import CastedSparseEmbedding
+from hrm.common import trunc_normal_init_
+from hrm.layers import rms_norm, SwiGLU, CastedLinear
+from hrm.sparse_embedding import CastedSparseEmbedding
 
 
 @dataclass
