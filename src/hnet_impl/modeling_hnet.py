@@ -11,7 +11,7 @@ from .xf import Isotropic
 from .lin import Lin, HighPrecLinear, LMHead
 
 # ACT imports
-from ..hrm.hrm.hrm_act_v1 import HierarchicalReasoningModel_ACTV1
+from hrm.hrm.hrm_act_v1 import HierarchicalReasoningModel_ACTV1
 
 ### ################
 ### H-Net submodules
